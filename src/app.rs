@@ -373,6 +373,32 @@ fn shared_session(agent: &str, hook_pid: Option<u32>, cwd: &str) -> (Option<u32>
 /// el siguiente.
 const QUIET_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// Lo que sigue corriendo en segundo plano según `background_tasks` (Claude
+/// Code lo manda en Stop y SubagentStop): (id, tipo en español). Los
+/// subagentes no, que ya llegan por SubagentStart. None si el evento no trae
+/// la lista (otros agentes): entonces no se toca nada.
+fn background_tasks(v: &Value) -> Option<Vec<(String, String)>> {
+    let list = v["background_tasks"].as_array()?;
+    Some(
+        list.iter()
+            .filter(|t| t["type"] != "subagent")
+            .filter(|t| !matches!(t["status"].as_str(), Some("completed" | "failed" | "killed" | "stopped")))
+            .filter_map(|t| {
+                let id = t["id"].as_str()?.to_string();
+                let kind = match t["type"].as_str().unwrap_or("") {
+                    "shell" => "terminal",
+                    "monitor" => "monitor",
+                    "workflow" => "workflow",
+                    "teammate" => "compañero",
+                    "" => "tarea",
+                    other => other,
+                };
+                Some((id, kind.to_string()))
+            })
+            .collect(),
+    )
+}
+
 /// "codex" → "Codex". Un agente que no conocemos se muestra con mayúscula.
 fn agent_display(name: &str) -> String {
     match installer::Agent::from_name(name) {
@@ -921,8 +947,16 @@ impl App {
                 pet.add_kit(v["agent_id"].as_str(), v["agent_type"].as_str().unwrap_or(""));
                 cue = Some(Cue::Kit);
             }
-            "SubagentStop" => pet.remove_kit(v["agent_id"].as_str()),
+            "SubagentStop" => {
+                pet.remove_kit(v["agent_id"].as_str());
+                if let Some(tasks) = background_tasks(&v) {
+                    pet.sync_background(&tasks);
+                }
+            }
             "Stop" => {
+                if let Some(tasks) = background_tasks(&v) {
+                    pet.sync_background(&tasks);
+                }
                 let took = pet.on_stop();
                 cue = Some(Cue::Done);
                 if notifications {
@@ -1383,5 +1417,24 @@ impl ApplicationHandler<UserEvent> for App {
         // Recalcula: el cuadro pudo crear, dormir o despertar monitos.
         let frame = self.frame_interval().unwrap_or(EMPTY);
         el.set_control_flow(ControlFlow::WaitUntil(self.last_tick + frame));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_tasks;
+    use serde_json::json;
+
+    #[test]
+    fn background_tasks_from_claude_stop() {
+        let v = json!({ "hook_event_name": "Stop", "background_tasks": [
+            { "id": "t1", "type": "shell", "status": "running", "command": "npm run dev" },
+            { "id": "t2", "type": "monitor", "status": "running" },
+            { "id": "t3", "type": "subagent", "status": "running", "agent_type": "Explore" },
+            { "id": "t4", "type": "shell", "status": "completed" }
+        ]});
+        let got = background_tasks(&v).unwrap();
+        assert_eq!(got, [("t1".to_string(), "terminal".to_string()), ("t2".to_string(), "monitor".to_string())]);
+        assert!(background_tasks(&json!({ "hook_event_name": "Stop" })).is_none(), "sin lista no se toca nada");
     }
 }

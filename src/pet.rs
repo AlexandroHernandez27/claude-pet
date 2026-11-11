@@ -366,6 +366,19 @@ impl Pet {
         self.say(format!("+ {kind}"), 1.5);
     }
 
+    /// Las tareas en segundo plano que Claude Code reporta al terminar cada
+    /// turno (monitores, terminales, workflows) también son crías. Llega la
+    /// lista completa de (id, tipo): las que ya no están, se van.
+    pub fn sync_background(&mut self, tasks: &[(String, String)]) {
+        let ids: Vec<String> = tasks.iter().map(|(id, _)| format!("bg:{id}")).collect();
+        self.kits.retain(|k| !k.id.starts_with("bg:") || ids.contains(&k.id));
+        for ((_, kind), id) in tasks.iter().zip(ids) {
+            if !self.kits.iter().any(|k| k.id == id) {
+                self.kits.push(Kit { id, kind: kind.clone(), born: Instant::now() });
+            }
+        }
+    }
+
     /// Se va una cría (SubagentStop): la de ese id, o la más vieja si no hay id.
     pub fn remove_kit(&mut self, id: Option<&str>) {
         let pos = match id {
@@ -1010,6 +1023,20 @@ mod tests {
         assert_eq!(p.kits[0].kind, "Plan", "sin id se va la más vieja");
         p.on_end();
         assert!(p.kits.is_empty(), "al cerrar la sesión no quedan crías");
+    }
+
+    #[test]
+    fn background_tasks_follow_the_reported_list() {
+        let mut p = pet_at(400.0, SCREEN.b - size());
+        p.add_kit(Some("agente"), "Explore");
+        let t = |id: &str, kind: &str| (id.to_string(), kind.to_string());
+        p.sync_background(&[t("1", "monitor"), t("2", "terminal")]);
+        assert_eq!(p.kits.len(), 3);
+        p.sync_background(&[t("2", "terminal")]);
+        let kinds: Vec<&str> = p.kits.iter().map(|k| k.kind.as_str()).collect();
+        assert_eq!(kinds, ["Explore", "terminal"], "el monitor terminó; el subagente no se toca");
+        p.sync_background(&[]);
+        assert_eq!(p.kits.len(), 1);
     }
 
     #[test]
