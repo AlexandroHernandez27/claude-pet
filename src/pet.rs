@@ -83,6 +83,12 @@ pub struct Pet {
     pub label: String,
     /// Carpeta de la sesión (para ir a ella con doble clic).
     pub cwd: String,
+    /// App a la cual ir con doble clic cuando la sesión no tiene proceso propio
+    /// (ChatGPT Desktop: sus sesiones de Codex corren en un servicio compartido).
+    pub app: Option<String>,
+    /// Último evento del agente: un monito sin proceso que vigilar se va tras
+    /// un buen rato sin noticias.
+    pub last_event: Instant,
     /// Quién manda los eventos: "Claude", "Codex", "Gemini", "OpenCode"…
     pub agent: String,
     pub color: [u8; 3],
@@ -206,6 +212,8 @@ impl Pet {
         let mut pet = Pet {
             session,
             cwd: String::new(),
+            app: None,
+            last_event: Instant::now(),
             agent,
             color,
             pid,

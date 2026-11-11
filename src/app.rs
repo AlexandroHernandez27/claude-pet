@@ -348,16 +348,30 @@ fn restart(el: &ActiveEventLoop) {
     el.exit();
 }
 
-/// Los hooks de la TUI de Codex los corre el daemon `codex app-server`, que no
-/// muere al cerrar la sesión: el monito se ata al proceso de Codex que trabaja
-/// en esa carpeta. Si el hook ya viene de un cliente (`codex exec`), ese mismo.
-fn codex_pid(hook_pid: Option<u32>, cwd: &str) -> Option<u32> {
-    let clients = codex::clients();
+/// Codex y OpenCode corren sus sesiones en un servicio compartido
+/// (`codex app-server`, `opencode serve`) que no muere al cerrar la sesión ni
+/// tiene ventana. El monito se ata al proceso de terminal que trabaja en esa
+/// carpeta; si el hook viene de un proceso con ventana propia (la extensión de
+/// un editor), a ese. Si no hay ninguno, la sesión es de una app de
+/// escritorio: para Codex, ChatGPT Desktop, que se recuerda para el doble clic.
+fn shared_session(agent: &str, hook_pid: Option<u32>, cwd: &str) -> (Option<u32>, Option<String>) {
+    let clients = codex::clients_of(agent);
     if hook_pid.is_some_and(|p| clients.iter().any(|c| c.pid == p)) {
-        return hook_pid;
+        return (hook_pid, None);
     }
-    codex::client_in(&clients, cwd).or(hook_pid)
+    if let Some(p) = codex::client_in(&clients, cwd) {
+        return (Some(p), None);
+    }
+    if let Some(p) = hook_pid.filter(|&p| platform::app_of(p).is_some()) {
+        return (Some(p), None);
+    }
+    (None, (agent == "codex").then(|| platform::CHATGPT.to_string()))
 }
+
+/// Un monito sin proceso que vigilar (ChatGPT Desktop, OpenCode sin
+/// terminal, monitos de prueba) se va tras este rato sin eventos; vuelve con
+/// el siguiente.
+const QUIET_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// "codex" → "Codex". Un agente que no conocemos se muestra con mayúscula.
 fn agent_display(name: &str) -> String {
@@ -865,9 +879,11 @@ impl App {
         let Some(session) = v["session_id"].as_str().filter(|s| !s.is_empty()) else { return };
         let pid = v["pet_pid"].as_u64().map(|p| p as u32);
         // Los hooks de versiones anteriores no mandan "agent": son de Claude Code.
+        let raw_agent = v["agent"].as_str().unwrap_or("claude");
+        let shared = matches!(raw_agent, "codex" | "opencode");
         let agent = match v["desktop"].as_bool() {
             Some(true) => "Claude Desktop".to_string(),
-            _ => agent_display(v["agent"].as_str().unwrap_or("claude")),
+            _ => agent_display(raw_agent),
         };
         debug_log(format_args!("hook {agent} {event} {session} pid={pid:?}"));
 
@@ -877,11 +893,15 @@ impl App {
             None => {
                 self.scanned.insert(session.to_string());
                 let cwd = v["cwd"].as_str().unwrap_or("");
-                let pid = if v["agent"] == "codex" { codex_pid(pid, cwd) } else { pid };
-                debug_log(format_args!("monito nuevo: {session} ({agent}, {event}, pid={pid:?})"));
+                let (pid, app) = if shared { shared_session(raw_agent, pid, cwd) } else { (pid, None) };
+                let agent = if app.as_deref() == Some(platform::CHATGPT) { "ChatGPT".to_string() } else { agent };
+                debug_log(format_args!("monito nuevo: {session} ({agent}, {event}, pid={pid:?}, app={app:?})"));
                 let label = label_from_cwd(cwd, &agent);
                 match self.spawn_pet(el, session.to_string(), label, agent, cwd, pid) {
-                    Some(i) => (i, true),
+                    Some(i) => {
+                        self.pets[i].pet.app = app;
+                        (i, true)
+                    }
                     None => return,
                 }
             }
@@ -889,10 +909,11 @@ impl App {
         let notifications = self.notifications_on();
         let mut cue = None;
         let pet = &mut self.pets[idx].pet;
-        // El primer PID manda: los hooks de Codex llegan con el del daemon,
-        // que no es el de la sesión.
+        pet.last_event = Instant::now();
+        // El primer PID manda. Los hooks de Codex y OpenCode llegan con el del
+        // servicio compartido, que no es el de la sesión: se busca otra vez.
         if pet.pid.is_none() {
-            pet.pid = pid;
+            pet.pid = if shared { shared_session(raw_agent, pid, &pet.cwd).0 } else { pid };
         }
         match event {
             "UserPromptSubmit" => pet.on_prompt(),
@@ -1108,7 +1129,10 @@ impl App {
         if now - self.last_pid_check > Duration::from_secs(10) {
             self.last_pid_check = now;
             for pw in &mut self.pets {
-                if pw.pet.pid.is_some_and(|pid| !platform::pid_alive(pid)) {
+                let dead = pw.pet.pid.is_some_and(|pid| !platform::pid_alive(pid));
+                // Sin proceso que vigilar: se va tras mucho rato sin eventos.
+                let forgotten = pw.pet.pid.is_none() && pw.pet.last_event.elapsed() > QUIET_LIMIT;
+                if dead || forgotten {
                     pw.pet.on_end();
                 }
             }
@@ -1236,8 +1260,12 @@ pub fn debug_log(msg: std::fmt::Arguments) {
 
 /// Trae al frente la terminal o el editor de la sesión del monito.
 fn go_to_session(pet: &mut Pet) {
-    let target = pet.pid.and_then(|pid| platform::focus_session(pid, &pet.cwd));
-    debug_log(format_args!("ir a la sesión {} (pid {:?}): {target:?}", pet.session, pet.pid));
+    let mut target = pet.pid.and_then(|pid| platform::focus_session(pid, &pet.cwd));
+    // Sin proceso propio (ChatGPT Desktop): la app, si está abierta.
+    if target.is_none() {
+        target = pet.app.clone().filter(|app| platform::activate_app(app));
+    }
+    debug_log(format_args!("ir a la sesión {} (pid {:?}, app {:?}): {target:?}", pet.session, pet.pid, pet.app));
     if target.is_none() {
         pet.say("No encontré su ventana", 2.5);
     }
