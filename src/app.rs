@@ -1193,6 +1193,15 @@ impl App {
             // Solo se dibuja y se habla con el sistema de ventanas si algo cambió.
             let pos = ((pet.x - off()).round() as i32, (pet.y - off()).round() as i32);
             if pos != pw.last_pos {
+                // Diagnóstico: un monito no debería moverse tanto de un cuadro a
+                // otro salvo que lo lancen o vaya parado en una ventana que movieron.
+                let (dx, dy) = (pos.0 - pw.last_pos.0, pos.1 - pw.last_pos.1);
+                if pw.last_pos.0 != i32::MIN && dx.abs().max(dy.abs()) > 400 {
+                    debug_log(format_args!(
+                        "salto grande de {}: ({}, {}) → ({}, {}), modo {:?}, sobre ventana: {}",
+                        pet.session, pw.last_pos.0, pw.last_pos.1, pos.0, pos.1, pet.mode, pet.perched()
+                    ));
+                }
                 pw.surface.move_to(&pw.window, pos.0, pos.1);
                 pw.last_pos = pos;
             }
