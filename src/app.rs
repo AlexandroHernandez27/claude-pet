@@ -6,7 +6,6 @@ use serde_json::Value;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId, WindowLevel};
@@ -771,7 +770,7 @@ impl App {
             .with_visible(false)
             .with_active(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_inner_size(PhysicalSize::new(BUF, BUF));
+            .with_inner_size(platform::window_size(BUF));
         let window = el.create_window(platform::window_attributes(attrs)).ok()?;
         let surface = Surface::new(&window, BUF, BUF);
         // Aparece en el monitor donde está el cursor.
