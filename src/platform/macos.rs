@@ -619,6 +619,11 @@ pub fn set_autostart(exe: Option<&Path>) {
 
 pub fn attach_console() {}
 
+/// Solo existe en Windows (nombres cortos 8.3).
+pub fn short_path(_: &Path) -> Option<std::path::PathBuf> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

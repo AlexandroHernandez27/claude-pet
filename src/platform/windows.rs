@@ -54,6 +54,12 @@ unsafe extern "system" fn pet_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     if msg == WM_NCHITTEST {
         return HTCLIENT as LRESULT;
     }
+    // Al pasar a un monitor con otra escala (100 % → 150 %), Windows le pide a
+    // winit agrandar y mover la ventana: el monito brincaba. Su tamaño y su
+    // posición los manejamos nosotros (en píxeles físicos), así que se ignora.
+    if msg == WM_DPICHANGED {
+        return 0;
+    }
     let prev: WNDPROC = std::mem::transmute(WINIT_PROC.load(Ordering::Relaxed));
     CallWindowProcW(prev, hwnd, msg, wparam, lparam)
 }
@@ -473,6 +479,20 @@ pub fn set_autostart(exe: Option<&Path>) {
             }
         }
     }
+}
+
+/// El nombre corto 8.3 de una ruta (sin espacios), si el disco los tiene.
+pub fn short_path(path: &Path) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), null_mut(), 0) };
+    if n == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; n as usize];
+    let m = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), n) };
+    (m > 0 && m < n).then(|| std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..m as usize])))
 }
 
 /// En release el .exe es de subsistema "windows"; esto recupera la consola
