@@ -456,7 +456,9 @@ mod tests {
         // Sin nada nuestro ni ajeno, "hooks" desaparece.
         let mut only_ours = json!({});
         Agent::Codex.add_hooks(&mut only_ours, "/x/claude-pet", false);
-        assert_eq!(only_ours["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], "\"/x/claude-pet\" hook --agent codex");
+        // En Windows sin comillas (ver hook_commands_work_in_every_shell).
+        let codex = if cfg!(windows) { "/x/claude-pet hook --agent codex" } else { "\"/x/claude-pet\" hook --agent codex" };
+        assert_eq!(only_ours["hooks"]["PermissionRequest"][0]["hooks"][0]["command"], codex);
         assert_eq!(only_ours["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 3);
         assert!(only_ours["hooks"]["SubagentStop"].is_array());
         Agent::Codex.strip_hooks(&mut only_ours);
